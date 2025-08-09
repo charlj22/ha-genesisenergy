@@ -10,20 +10,13 @@ from urllib.parse import parse_qs
 
 _LOGGER = logging.getLogger(__name__)
 
-# http.client.HTTPConnection.debuglevel = 2
-# logging.basicConfig()
-# logging.getLogger().setLevel(logging.DEBUG)
-# requests_log = logging.getLogger("requests.packages.urllib3")
-# requests_log.setLevel(logging.DEBUG)
-# requests_log.propagate = True
-
 class GenesisEnergyApi:
     """Define the Genesis Energy API."""
 
     def __init__(self, email, password):
         """Initialise the API."""
         self._client_id = "8e41676f-7601-4490-9786-85d74f387f47"
-        self._redirect_uri = 'https://myaccount.genesisenergy.co.nz/auth/redirect',
+        self._redirect_uri = 'https://myaccount.genesisenergy.co.nz/auth/redirect'
         self._url_token_base = "https://auth.genesisenergy.co.nz/auth.genesisenergy.co.nz"
         self._url_data_base = "https://web-api.genesisenergy.co.nz/"
         self._p = "B2C_1A_signin"
@@ -41,8 +34,7 @@ class GenesisEnergyApi:
         """Get the settings from json result."""
         for line in page.splitlines():
             if line.startswith("var SETTINGS = ") and line.endswith(";"):
-                # Remove the prefix and suffix to get valid JSON
-                json_string = line.removeprefix("var SETTINGS = ").removesuffix(";")
+             json_string = line.removeprefix("var SETTINGS = ").removesuffix(";")
                 return json.loads(json_string)
         return None
 
@@ -50,7 +42,8 @@ class GenesisEnergyApi:
         """Get the refresh token."""
         _LOGGER.debug("API get_refresh_token")
 
-        async with aiohttp.ClientSession() as session:
+        jar = aiohttp.CookieJar(quote_cookie=False)
+        async with aiohttp.ClientSession(cookie_jar=jar) as session:
             url = f"{self._url_token_base}/oauth2/v2.0/authorize"
             scope = f'openid offline_access {self._client_id}'
             params = {
@@ -59,7 +52,7 @@ class GenesisEnergyApi:
                 'response_type': 'code',
                 'response_mode': 'query',
                 'scope': scope,
-                'redirect_uri': 'https://myaccount.genesisenergy.co.nz/auth/redirect',
+                'redirect_uri': self._redirect_uri,,
             }
 
             _LOGGER.debug("Step: 1")
@@ -80,8 +73,7 @@ class GenesisEnergyApi:
             }
             _LOGGER.debug("Step: 2")
             async with session.post(url, headers=headers, data=payload) as response:
-                response_text = await response.text()
-                pass
+                await response.text()
 
 
             url = f"{self._url_token_base}/{self._p}/api/SelfAsserted/confirmed"
@@ -93,9 +85,11 @@ class GenesisEnergyApi:
             _LOGGER.debug("Step: 3")
             async with session.get(url, params=params) as response:
                 response_text = await response.text()
-                # Extract the new CSRF token from cookies because it changes here
-                csrf_value = response.cookies.get('x-ms-cpim-csrf').value
-                csrf = csrf_value
+                 csrf_cookie = response.cookies.get('x-ms-cpim-csrf')
+                if csrf_cookie is None:
+                    _LOGGER.error("CSRF cookie not found in step 3 response")
+                    raise RuntimeError("Missing CSRF cookie during login flow")
+                csrf = csrf_cookie.value
 
             payload = {
                 "request_type": "RESPONSE",
@@ -110,7 +104,7 @@ class GenesisEnergyApi:
             url = f"{self._url_token_base}/{self._p}/SelfAsserted?tx={trans_id}&p={self._p}"
             _LOGGER.debug("Step: 4")
             async with session.post(url, headers=headers, data=payload) as response:
-                pass
+                 await response.text()
 
             url = f"{self._url_token_base}/{self._p}/api/CombinedSigninAndSignup/confirmed"
             params = {
@@ -167,7 +161,8 @@ class GenesisEnergyApi:
             "refresh_token": self._refresh_token,
         }
 
-        async with aiohttp.ClientSession() as session:
+         jar = aiohttp.CookieJar(quote_cookie=False)
+        async with aiohttp.ClientSession(cookie_jar=jar) as session:
             url = f"{self._url_token_base}/oauth2/v2.0/token"
             async with session.post(url, data=token_data) as response:
                 if response.status == 200:
@@ -176,7 +171,6 @@ class GenesisEnergyApi:
                     _LOGGER.debug(f"Auth Token: {self._token}")
                 else:
                     _LOGGER.error("Failed to retrieve the token page.")
-
 
     async def get_energy_data(self):
         """Get data from the API."""
@@ -192,14 +186,12 @@ class GenesisEnergyApi:
             await self.get_refresh_token()
 
         headers = {
-            "authorization":  "Bearer " + self._token,
+              "authorization": "Bearer " + self._token,
         }
 
-        # API only returns 120 usage items (starting from the from_date).
-        # If you want to query more than ~4 days of hourly data, at a time you need to split it into multiple requests
-        # or the the latest usage will not be returned.
+       
         to_date = datetime.now()
-        from_date = to_date - timedelta(days=4) # fetch 4 days worth of data
+           from_date = to_date - timedelta(days=4)
 
         url = f"{self._url_data_base}/v2/private/electricity/site-usage"
         params = {
@@ -208,18 +200,17 @@ class GenesisEnergyApi:
             'intervalType': "HOURLY"
         }
 
-        async with aiohttp.ClientSession() as session, \
-                session.post(url, headers=headers, json=params) as response:
-            if response.status == 200:
-                data = await response.json()
-                # _LOGGER.debug(f"get_data returned data: {data}")
-                if not data:
-                    _LOGGER.warning("Fetched consumption successfully but there was no data")
-                return data
-            else:
-                message = await response.text()
-                _LOGGER.error("Could not fetch consumption, error: %s", message)
-                return None
+         jar = aiohttp.CookieJar(quote_cookie=False)
+        async with aiohttp.ClientSession(cookie_jar=jar) as session:
+            async with session.get(url, headers=headers, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if not data:
+                        _LOGGER.warning("Fetched consumption successfully but there was no data")
+                    return data
+                else:
+                    _LOGGER.error("Could not fetch consumption")
+                    return None
             
 
     async def get_gas_data(self):
